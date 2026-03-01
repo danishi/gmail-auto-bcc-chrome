@@ -35,6 +35,8 @@
     if (el.matches('[role="dialog"]')) return true;
     // Inline compose / reply – Gmail wraps these in specific containers
     if (el.classList.contains("AD")) return true;
+    // Inline reply form container
+    if (el.classList.contains("fX")) return true;
     return false;
   }
 
@@ -42,7 +44,7 @@
     const results = new Set();
     if (isComposeContainer(root)) results.add(root);
     if (root.querySelectorAll) {
-      root.querySelectorAll('[role="dialog"], .AD').forEach((el) => results.add(el));
+      root.querySelectorAll('[role="dialog"], .AD, .fX').forEach((el) => results.add(el));
     }
 
     // Walk up from root to find parent compose containers.
@@ -128,16 +130,15 @@
   }
 
   function bccAlreadyContains(container, email) {
-    // Check if the BCC area already contains the configured email
-    // Gmail represents added recipients as "chips" (spans/divs with the email)
+    // Check if the BCC area already contains the configured email as a
+    // confirmed chip. We intentionally do NOT check input.value /
+    // input.textContent here because residual (uncommitted) text in the
+    // input field is not a confirmed recipient and should not be treated
+    // as a duplicate.
     const bccInput = findBccInput(container);
     if (!bccInput) return false;
 
-    // Check the value of the input itself
-    const value = bccInput.value || bccInput.textContent || "";
-    if (emailEquals(value, email)) return true;
-
-    // Check sibling chip elements (Gmail creates these for each recipient)
+    // Check chip elements (Gmail creates these for each confirmed recipient)
     const parent = bccInput.closest("div");
     if (parent) {
       const chips = parent.querySelectorAll('[data-hovercard-id], [email], [data-name]');
@@ -211,6 +212,36 @@
 
     // Also press Tab as a fallback to confirm
     dispatchKeyEvent(input, "Tab", "Tab", 9);
+
+    await delay(200);
+
+    // Gmail's synthetic event handling may create the chip but leave the input
+    // value populated. Explicitly clear it to prevent autocomplete artifacts
+    // and to avoid bccAlreadyContains() misreading residual text as a chip.
+    if (input.isContentEditable) {
+      if (input.textContent.trim()) {
+        input.textContent = "";
+        input.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          inputType: "deleteContent",
+        }));
+      }
+    } else {
+      if (input.value) {
+        const proto = input instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+        if (nativeSetter) {
+          nativeSetter.call(input, "");
+        } else {
+          input.value = "";
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      }
+    }
   }
 
   // --- Main processing logic ---
