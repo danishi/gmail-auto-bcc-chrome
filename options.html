@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gmail Auto BCC - 設定</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Gmail Auto BCC</h1>
+      <p class="subtitle">アカウントごとにBCCアドレスを設定できます</p>
+    </header>
+
+    <main>
+      <section class="accounts-section">
+        <div class="section-header">
+          <h2>アカウント設定</h2>
+          <button id="addAccountBtn" class="btn btn-primary">
+            <span class="icon">+</span> アカウントを追加
+          </button>
+        </div>
+
+        <div id="accountsList" class="accounts-list">
+          <!-- アカウントカードがここに動的に追加される -->
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">📧</div>
+          <p>まだアカウントが登録されていません</p>
+          <p class="hint">「アカウントを追加」ボタンをクリックして設定を始めましょう</p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p class="version">Version 1.0.0</p>
+    </footer>
+  </div>
+
+  <!-- アカウント追加/編集モーダル -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">アカウントを追加</h3>
+        <button id="closeModalBtn" class="btn-close">&times;</button>
+      </div>
+      <form id="accountForm">
+        <div class="form-group">
+          <label for="accountEmail">Gmailアドレス</label>
+          <input type="email" id="accountEmail" placeholder="example@gmail.com" required>
+        </div>
+
+        <div class="form-group">
+          <label>BCCアドレス</label>
+          <div id="bccAddressesList" class="bcc-addresses-list">
+            <!-- BCCアドレス入力欄が動的に追加される -->
+          </div>
+          <button type="button" id="addBccBtn" class="btn btn-secondary btn-small">
+            + BCCアドレスを追加
+          </button>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="accountEnabled" checked>
+            <span>この設定を有効にする</span>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="cancelBtn" class="btn btn-secondary">キャンセル</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 削除確認モーダル -->
+  <div id="deleteModal" class="modal hidden">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h3>確認</h3>
+      </div>
+      <p>このアカウントの設定を削除しますか？</p>
+      <div class="modal-actions">
+        <button id="cancelDeleteBtn" class="btn btn-secondary">キャンセル</button>
+        <button id="confirmDeleteBtn" class="btn btn-danger">削除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toast" class="toast hidden">
+    <span id="toastMessage"></span>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
