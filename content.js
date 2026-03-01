@@ -5,6 +5,7 @@
   const PROCESSING_ATTR = "data-auto-bcc-processing";
   const CHECK_INTERVAL = 500;
   const MAX_RETRIES = 10;
+  const MAX_PARENT_DEPTH = 20;
 
   let config = { bccAddress: "", enabled: true };
 
@@ -29,42 +30,110 @@
 
   // --- Compose window detection ---
 
-  function isComposeContainer(el) {
+  /**
+   * Validates that an element is an actual Gmail compose/reply window by
+   * checking for compose-specific child elements.
+   *
+   * A real compose window always contains:
+   *   - A "To" recipient field (input[name="to"] — locale-independent)
+   *   - An editable compose body area (contenteditable div with role/aria attrs)
+   *
+   * This prevents false positives from settings dialogs, contact pickers,
+   * confirmation dialogs, and other role="dialog" elements in Gmail.
+   */
+  function isActualComposeWindow(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-    // Popup compose dialog
-    if (el.matches('[role="dialog"]')) return true;
-    // Inline compose / reply – Gmail wraps these in specific containers
-    if (el.classList.contains("AD")) return true;
-    // Inline reply form container
-    if (el.classList.contains("fX")) return true;
-    return false;
+
+    // Must have a recipient "To" field (locale-independent attribute)
+    const hasToField = !!el.querySelector(
+      'input[name="to"], textarea[name="to"]'
+    );
+    if (!hasToField) return false;
+
+    // Must have an editable compose body area
+    const hasBody = !!el.querySelector(
+      '[role="textbox"][contenteditable="true"], ' +
+      'div[contenteditable="true"][aria-label], ' +
+      'div[contenteditable="true"][g_editable="true"]'
+    );
+
+    return hasBody;
   }
 
+  /**
+   * Starting from a given node, walks up the DOM to find the smallest
+   * ancestor that qualifies as an actual compose window.
+   * Stops at document.body and limits traversal depth.
+   */
+  function findComposeAncestor(node) {
+    let el = node.parentElement;
+    let depth = 0;
+    while (el && depth < MAX_PARENT_DEPTH) {
+      if (el === document.body || el === document.documentElement) break;
+      if (isActualComposeWindow(el)) return el;
+      el = el.parentElement;
+      depth++;
+    }
+    return null;
+  }
+
+  /**
+   * Collects Gmail compose/reply containers from a given DOM root.
+   *
+   * Uses a two-phase approach:
+   *   Phase 1 — Gather candidates from dialogs, inline compose indicators,
+   *             and parent traversal.
+   *   Phase 2 — Validate every candidate with isActualComposeWindow() to
+   *             filter out non-compose dialogs.
+   */
   function collectComposeContainers(root) {
-    const results = new Set();
-    if (isComposeContainer(root)) results.add(root);
-    if (root.querySelectorAll) {
-      root.querySelectorAll('[role="dialog"], .AD, .fX').forEach((el) => results.add(el));
+    const candidates = new Set();
+
+    // Phase 1a: Check if root itself is a dialog
+    if (root.matches && root.matches('[role="dialog"]')) {
+      candidates.add(root);
     }
 
-    // Walk up from root to find parent compose containers.
-    // This handles mutations inside compose windows (e.g. reply form expansion
-    // adds child nodes to an existing container that was not yet processed).
+    // Phase 1b: Find all dialog elements within the root
+    if (root.querySelectorAll) {
+      root.querySelectorAll('[role="dialog"]').forEach((el) => candidates.add(el));
+    }
+
+    // Phase 1c: Walk up from root to find a parent dialog.
+    // This handles mutations inside compose windows (e.g. reply form
+    // expanding adds child nodes to an existing container).
     let parent = root.parentElement;
-    while (parent) {
-      if (isComposeContainer(parent)) {
-        results.add(parent);
+    let depth = 0;
+    while (parent && depth < MAX_PARENT_DEPTH) {
+      if (parent === document.body) break;
+      if (parent.matches && parent.matches('[role="dialog"]')) {
+        candidates.add(parent);
         break;
       }
       parent = parent.parentElement;
+      depth++;
     }
 
-    // Deduplicate: when a dialog contains an .AD, both are found above.
-    // Keep only the outermost containers to avoid processing the same
-    // compose window twice (which causes duplicate BCC addresses).
-    const arr = [...results];
-    const filtered = arr.filter((el) => {
-      return !arr.some((other) => other !== el && other.contains(el));
+    // Phase 1d: Find inline compose/reply windows (not wrapped in a dialog).
+    // Locate To fields and walk up to find their compose container boundary.
+    if (root.querySelectorAll) {
+      root.querySelectorAll('input[name="to"]').forEach((toField) => {
+        const container = findComposeAncestor(toField);
+        if (container) candidates.add(container);
+      });
+    }
+
+    // Also check if root is inside an inline compose window
+    const inlineAncestor = findComposeAncestor(root);
+    if (inlineAncestor) candidates.add(inlineAncestor);
+
+    // Phase 2: Validate — only keep candidates that are actual compose windows
+    const validated = [...candidates].filter(isActualComposeWindow);
+
+    // Deduplicate: keep only outermost containers to avoid processing
+    // the same compose window twice (which causes duplicate BCC addresses)
+    const filtered = validated.filter((el) => {
+      return !validated.some((other) => other !== el && other.contains(el));
     });
 
     return new Set(filtered);
@@ -74,45 +143,54 @@
 
   function findBccToggle(container) {
     // Strategy 1: data-tooltip attribute (case-insensitive for locale robustness)
-    const tooltip = container.querySelector('[data-tooltip="Bcc" i]');
+    const tooltip = container.querySelector(
+      '[data-tooltip="Bcc" i], [data-tooltip*="Bcc" i]'
+    );
     if (tooltip) return tooltip;
 
-    // Strategy 2: find a compact span with "Bcc" text acting as a link
-    // Limit search depth to avoid scanning the entire compose body
-    const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
-    for (const span of headerArea.querySelectorAll("span")) {
-      if (span.textContent.trim().toLowerCase() === "bcc"
-          && !span.querySelector("input, textarea, [contenteditable]")
-          && span.childElementCount === 0) {
-        return span;
+    // Strategy 2: aria-label containing "Bcc" on interactive elements
+    const ariaToggle = container.querySelector(
+      '[role="link"][aria-label*="Bcc" i], ' +
+      '[role="button"][aria-label*="Bcc" i], ' +
+      'span[aria-label*="Bcc" i], ' +
+      'a[aria-label*="Bcc" i]'
+    );
+    if (ariaToggle) return ariaToggle;
+
+    // Strategy 3: Find a compact span/link with "Bcc" text acting as a toggle.
+    // Only match leaf elements (no children) that are not input fields.
+    for (const el of container.querySelectorAll("span, a")) {
+      if (el.textContent.trim().toLowerCase() === "bcc"
+          && !el.querySelector("input, textarea, [contenteditable]")
+          && el.childElementCount === 0) {
+        return el;
       }
     }
     return null;
   }
 
   function isBccFieldVisible(container) {
-    // If we can already find a Bcc input, the field is visible
     return !!findBccInput(container);
   }
 
   function findBccInput(container) {
-    // Strategy 1: input/textarea with name="bcc"
+    // Strategy 1: input/textarea with name="bcc" (most reliable, locale-independent)
     const named = container.querySelector('input[name="bcc"], textarea[name="bcc"]');
     if (named) return named;
 
     // Strategy 2: aria-label containing "Bcc"
     const ariaEl = container.querySelector(
-      'input[aria-label*="Bcc" i], textarea[aria-label*="Bcc" i], [contenteditable][aria-label*="Bcc" i]'
+      'input[aria-label*="Bcc" i], textarea[aria-label*="Bcc" i], ' +
+      '[contenteditable][aria-label*="Bcc" i], ' +
+      '[role="combobox"][aria-label*="Bcc" i]'
     );
     if (ariaEl) return ariaEl;
 
-    // Strategy 3: Walk up from a "Bcc" label span to find the editable sibling
-    // Scoped to header area to avoid scanning the compose body
-    const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
-    for (const span of headerArea.querySelectorAll("span")) {
+    // Strategy 3: Walk from a "Bcc" label span to find the editable sibling
+    for (const span of container.querySelectorAll("span")) {
       if (span.textContent.trim().toLowerCase() === "bcc" && span.childElementCount === 0) {
         // Walk up to the row-level parent and look for an editable field
-        const row = span.closest("div, tr");
+        const row = span.closest('[role="group"], div, tr');
         if (row) {
           const editable = row.querySelector(
             'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="combobox"]'
@@ -252,12 +330,24 @@
     if (container.getAttribute(PROCESSED_ATTR)) return;
     // Another call is currently processing this container – skip
     if (container.getAttribute(PROCESSING_ATTR)) return;
+
+    // Guard: verify this is truly a compose/reply window before proceeding.
+    // This prevents accidental manipulation of non-compose dialogs
+    // (e.g. contact pickers, settings dialogs) that could break Gmail's UI.
+    if (!isActualComposeWindow(container)) return;
+
     container.setAttribute(PROCESSING_ATTR, "true");
 
     try {
       // Retry loop – Gmail may still be rendering the compose UI
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         await delay(CHECK_INTERVAL);
+
+        // Re-validate on each attempt in case the container's content changed
+        // (e.g. a dialog was repurposed or the compose elements were removed)
+        if (!isActualComposeWindow(container)) {
+          return;
+        }
 
         // Check if BCC already has our address (e.g. draft being re-opened)
         if (bccAlreadyContains(container, config.bccAddress)) {
