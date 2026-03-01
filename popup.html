@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Gmail Auto BCC</h1>
+  <div class="form-group">
+    <label for="bccAddress">BCCメールアドレス</label>
+    <input type="email" id="bccAddress" placeholder="example@example.com">
+  </div>
+  <div class="form-group toggle-row">
+    <label for="enabled">有効</label>
+    <input type="checkbox" id="enabled">
+  </div>
+  <button id="save">保存</button>
+  <div id="status" class="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
