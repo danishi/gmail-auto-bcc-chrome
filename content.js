@@ -46,19 +46,20 @@
   // --- BCC toggle & input helpers ---
 
   function findBccToggle(container) {
-    // Strategy 1: span with exact "Bcc" text acting as a link
-    for (const span of container.querySelectorAll("span")) {
-      if (span.textContent.trim() === "Bcc" && !span.querySelector("input, textarea, [contenteditable]")) {
-        // Ensure this span is small (toggle link), not a row label that is already expanded
-        const rect = span.getBoundingClientRect();
-        if (rect.width > 0 && rect.width < 200) {
-          return span;
-        }
-      }
-    }
-    // Strategy 2: data-tooltip attribute
+    // Strategy 1: data-tooltip attribute (most stable selector)
     const tooltip = container.querySelector('[data-tooltip="Bcc"]');
     if (tooltip) return tooltip;
+
+    // Strategy 2: find a compact span with exact "Bcc" text acting as a link
+    // Limit search depth to avoid scanning the entire compose body
+    const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
+    for (const span of headerArea.querySelectorAll("span")) {
+      if (span.textContent.trim() === "Bcc"
+          && !span.querySelector("input, textarea, [contenteditable]")
+          && span.childElementCount === 0) {
+        return span;
+      }
+    }
     return null;
   }
 
@@ -78,29 +79,27 @@
     );
     if (ariaEl) return ariaEl;
 
-    // Strategy 3: Look for a row that has "Bcc" label and then find the editable element inside
-    const allRows = container.querySelectorAll("div, tr, td");
-    for (const row of allRows) {
-      // Only check direct text, not deep text content (to avoid matching too broadly)
-      for (const child of row.childNodes) {
-        if (child.nodeType === Node.TEXT_NODE && child.textContent.trim() === "Bcc") {
+    // Strategy 3: Walk up from a "Bcc" label span to find the editable sibling
+    // Scoped to header area to avoid scanning the compose body
+    const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
+    for (const span of headerArea.querySelectorAll("span")) {
+      if (span.textContent.trim() === "Bcc" && span.childElementCount === 0) {
+        // Walk up to the row-level parent and look for an editable field
+        const row = span.closest("div, tr");
+        if (row) {
           const editable = row.querySelector(
             'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="combobox"]'
           );
           if (editable) return editable;
         }
       }
-      // Also check if the row has a <span> label "Bcc"
-      const labelSpan = row.querySelector(":scope > span, :scope > div > span");
-      if (labelSpan && labelSpan.textContent.trim() === "Bcc") {
-        const editable = row.querySelector(
-          'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="combobox"]'
-        );
-        if (editable && editable !== labelSpan) return editable;
-      }
     }
 
     return null;
+  }
+
+  function emailEquals(a, b) {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
   }
 
   function bccAlreadyContains(container, email) {
@@ -111,15 +110,15 @@
 
     // Check the value of the input itself
     const value = bccInput.value || bccInput.textContent || "";
-    if (value.toLowerCase().includes(email.toLowerCase())) return true;
+    if (emailEquals(value, email)) return true;
 
     // Check sibling chip elements (Gmail creates these for each recipient)
     const parent = bccInput.closest("div");
     if (parent) {
       const chips = parent.querySelectorAll('[data-hovercard-id], [email], [data-name]');
       for (const chip of chips) {
-        const chipEmail = chip.getAttribute("email") || chip.getAttribute("data-hovercard-id") || chip.textContent;
-        if (chipEmail && chipEmail.toLowerCase().includes(email.toLowerCase())) return true;
+        const chipEmail = chip.getAttribute("email") || chip.getAttribute("data-hovercard-id") || "";
+        if (emailEquals(chipEmail, email)) return true;
       }
     }
 
@@ -133,9 +132,10 @@
     await delay(100);
 
     if (input.isContentEditable) {
-      // For contenteditable, use execCommand for proper event handling
-      document.execCommand("selectAll", false, null);
-      document.execCommand("delete", false, null);
+      // For contenteditable, collapse selection to end and insert (don't clear existing content)
+      const sel = window.getSelection();
+      sel.selectAllChildren(input);
+      sel.collapseToEnd();
       document.execCommand("insertText", false, email);
     } else {
       // For regular input/textarea, use native setter to trigger React/Gmail handlers
@@ -216,15 +216,32 @@
   // --- MutationObserver ---
 
   function startObserver() {
-    const observer = new MutationObserver((mutations) => {
-      if (!config.enabled || !config.bccAddress) return;
+    let pendingNodes = [];
+    let debounceTimer = null;
 
+    function flushPendingNodes() {
+      if (!config.enabled || !config.bccAddress) {
+        pendingNodes = [];
+        return;
+      }
+      const nodes = pendingNodes;
+      pendingNodes = [];
+      for (const node of nodes) {
+        const containers = collectComposeContainers(node);
+        containers.forEach((c) => processCompose(c));
+      }
+    }
+
+    const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== Node.ELEMENT_NODE) continue;
-          const containers = collectComposeContainers(node);
-          containers.forEach((c) => processCompose(c));
+          pendingNodes.push(node);
         }
+      }
+      if (pendingNodes.length > 0) {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flushPendingNodes, 100);
       }
     });
 
