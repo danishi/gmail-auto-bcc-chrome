@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail Auto BCC",
+  "version": "1.0.0",
+  "description": "Gmail作成画面で指定したメールアドレスを自動的にBCCに追加するChrome拡張機能",
+  "permissions": ["storage"],
+  "host_permissions": ["https://mail.google.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gmail Auto BCC"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
