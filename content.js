@@ -2,6 +2,7 @@
   "use strict";
 
   const PROCESSED_ATTR = "data-auto-bcc-processed";
+  const PROCESSING_ATTR = "data-auto-bcc-processing";
   const CHECK_INTERVAL = 500;
   const MAX_RETRIES = 10;
 
@@ -43,7 +44,28 @@
     if (root.querySelectorAll) {
       root.querySelectorAll('[role="dialog"], .AD').forEach((el) => results.add(el));
     }
-    return results;
+
+    // Walk up from root to find parent compose containers.
+    // This handles mutations inside compose windows (e.g. reply form expansion
+    // adds child nodes to an existing container that was not yet processed).
+    let parent = root.parentElement;
+    while (parent) {
+      if (isComposeContainer(parent)) {
+        results.add(parent);
+        break;
+      }
+      parent = parent.parentElement;
+    }
+
+    // Deduplicate: when a dialog contains an .AD, both are found above.
+    // Keep only the outermost containers to avoid processing the same
+    // compose window twice (which causes duplicate BCC addresses).
+    const arr = [...results];
+    const filtered = arr.filter((el) => {
+      return !arr.some((other) => other !== el && other.contains(el));
+    });
+
+    return new Set(filtered);
   }
 
   // --- BCC toggle & input helpers ---
@@ -195,33 +217,53 @@
 
   async function processCompose(container) {
     if (!config.enabled || !config.bccAddress) return;
+    // Already successfully processed – nothing to do
     if (container.getAttribute(PROCESSED_ATTR)) return;
-    container.setAttribute(PROCESSED_ATTR, "true");
+    // Another call is currently processing this container – skip
+    if (container.getAttribute(PROCESSING_ATTR)) return;
+    container.setAttribute(PROCESSING_ATTR, "true");
 
-    // Retry loop – Gmail may still be rendering the compose UI
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      await delay(CHECK_INTERVAL);
+    try {
+      // Retry loop – Gmail may still be rendering the compose UI
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        await delay(CHECK_INTERVAL);
 
-      // Check if BCC already has our address (e.g. draft being re-opened)
-      if (bccAlreadyContains(container, config.bccAddress)) return;
+        // Check if BCC already has our address (e.g. draft being re-opened)
+        if (bccAlreadyContains(container, config.bccAddress)) {
+          container.setAttribute(PROCESSED_ATTR, "true");
+          return;
+        }
 
-      // If BCC field is not visible, try to open it
-      if (!isBccFieldVisible(container)) {
-        const toggle = findBccToggle(container);
-        if (toggle) {
-          toggle.click();
-          await delay(400);
-        } else {
-          // Toggle not found yet, retry
-          continue;
+        // If BCC field is not visible, try to open it
+        if (!isBccFieldVisible(container)) {
+          const toggle = findBccToggle(container);
+          if (toggle) {
+            toggle.click();
+            await delay(400);
+          } else {
+            // Toggle not found yet, retry
+            continue;
+          }
+        }
+
+        const bccInput = findBccInput(container);
+        if (bccInput) {
+          // Re-check right before filling to prevent duplicates when
+          // concurrent processCompose calls target overlapping containers
+          if (bccAlreadyContains(container, config.bccAddress)) {
+            container.setAttribute(PROCESSED_ATTR, "true");
+            return;
+          }
+          await fillInput(bccInput, config.bccAddress);
+          container.setAttribute(PROCESSED_ATTR, "true");
+          return;
         }
       }
-
-      const bccInput = findBccInput(container);
-      if (bccInput) {
-        await fillInput(bccInput, config.bccAddress);
-        return;
-      }
+      // All retries exhausted without success. Do NOT mark as processed so
+      // the container can be retried when new child mutations occur (e.g.
+      // reply form expanding from compact to full compose).
+    } finally {
+      container.removeAttribute(PROCESSING_ATTR);
     }
   }
 
