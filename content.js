@@ -8,9 +8,12 @@
   let config = { bccAddress: "", enabled: true };
 
   function loadConfig() {
-    chrome.storage.sync.get({ bccAddress: "", enabled: true }, (data) => {
-      config.bccAddress = data.bccAddress;
-      config.enabled = data.enabled;
+    return new Promise((resolve) => {
+      chrome.storage.sync.get({ bccAddress: "", enabled: true }, (data) => {
+        config.bccAddress = data.bccAddress;
+        config.enabled = data.enabled;
+        resolve();
+      });
     });
   }
 
@@ -46,15 +49,15 @@
   // --- BCC toggle & input helpers ---
 
   function findBccToggle(container) {
-    // Strategy 1: data-tooltip attribute (most stable selector)
-    const tooltip = container.querySelector('[data-tooltip="Bcc"]');
+    // Strategy 1: data-tooltip attribute (case-insensitive for locale robustness)
+    const tooltip = container.querySelector('[data-tooltip="Bcc" i]');
     if (tooltip) return tooltip;
 
-    // Strategy 2: find a compact span with exact "Bcc" text acting as a link
+    // Strategy 2: find a compact span with "Bcc" text acting as a link
     // Limit search depth to avoid scanning the entire compose body
     const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
     for (const span of headerArea.querySelectorAll("span")) {
-      if (span.textContent.trim() === "Bcc"
+      if (span.textContent.trim().toLowerCase() === "bcc"
           && !span.querySelector("input, textarea, [contenteditable]")
           && span.childElementCount === 0) {
         return span;
@@ -83,7 +86,7 @@
     // Scoped to header area to avoid scanning the compose body
     const headerArea = container.querySelector('.aoD, .fX, .GS') || container;
     for (const span of headerArea.querySelectorAll("span")) {
-      if (span.textContent.trim() === "Bcc" && span.childElementCount === 0) {
+      if (span.textContent.trim().toLowerCase() === "bcc" && span.childElementCount === 0) {
         // Walk up to the row-level parent and look for an editable field
         const row = span.closest("div, tr");
         if (row) {
@@ -125,6 +128,23 @@
     return false;
   }
 
+  // --- Keyboard event helper ---
+
+  function dispatchKeyEvent(target, key, code, keyCode) {
+    const commonProps = {
+      key,
+      code,
+      keyCode,
+      which: keyCode,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    target.dispatchEvent(new KeyboardEvent("keydown", commonProps));
+    target.dispatchEvent(new KeyboardEvent("keypress", commonProps));
+    target.dispatchEvent(new KeyboardEvent("keyup", commonProps));
+  }
+
   // --- Input filling ---
 
   async function fillInput(input, email) {
@@ -137,6 +157,13 @@
       sel.selectAllChildren(input);
       sel.collapseToEnd();
       document.execCommand("insertText", false, email);
+      // Dispatch InputEvent to notify Gmail's framework of the change
+      input.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        composed: true,
+        inputType: "insertText",
+        data: email,
+      }));
     } else {
       // For regular input/textarea, use native setter to trigger React/Gmail handlers
       const proto = input instanceof HTMLTextAreaElement
@@ -148,35 +175,20 @@
       } else {
         input.value = email;
       }
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
     }
 
     await delay(200);
 
     // Press Enter to confirm the recipient as a chip/token
-    const enterEvent = new KeyboardEvent("keydown", {
-      key: "Enter",
-      code: "Enter",
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-    });
-    input.dispatchEvent(enterEvent);
+    // Full keydown/keypress/keyup sequence for Gmail compatibility
+    dispatchKeyEvent(input, "Enter", "Enter", 13);
 
     await delay(100);
 
     // Also press Tab as a fallback to confirm
-    const tabEvent = new KeyboardEvent("keydown", {
-      key: "Tab",
-      code: "Tab",
-      keyCode: 9,
-      which: 9,
-      bubbles: true,
-      cancelable: true,
-    });
-    input.dispatchEvent(tabEvent);
+    dispatchKeyEvent(input, "Tab", "Tab", 9);
   }
 
   // --- Main processing logic ---
@@ -249,13 +261,19 @@
       childList: true,
       subtree: true,
     });
+
+    // Initial scan for compose windows already present in the DOM
+    const existing = collectComposeContainers(document.body);
+    existing.forEach((c) => processCompose(c));
   }
 
   // --- Init ---
-  loadConfig();
-  if (document.body) {
-    startObserver();
-  } else {
-    document.addEventListener("DOMContentLoaded", startObserver);
-  }
+  // Wait for config to load before starting the observer to prevent race condition
+  loadConfig().then(() => {
+    if (document.body) {
+      startObserver();
+    } else {
+      document.addEventListener("DOMContentLoaded", startObserver);
+    }
+  });
 })();
